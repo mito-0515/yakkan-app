@@ -57,7 +57,7 @@ question = st.text_area(
 
 # 判定実行
 if st.button("🔍 判定する", type="primary", disabled=not question):
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
     st.subheader("③ 判定結果")
     result_cols = st.columns(len(companies))
