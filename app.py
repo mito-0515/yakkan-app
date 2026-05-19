@@ -1,14 +1,13 @@
 import streamlit as st
-import google.generativeai as genai
-import tempfile
-import os
+import pdfplumber
+import io
+from google import genai
 
 st.set_page_config(page_title="約款 有無責判定アプリ", page_icon="📋", layout="wide")
 
 st.title("📋 約款 有無責判定アプリ")
 st.caption("D&O保険などの約款PDFをアップロードして、有責・無責を自動判定します")
 
-# サイドバー：APIキー入力
 with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.text_input("Gemini APIキー", type="password", placeholder="AIza...")
@@ -23,14 +22,20 @@ if not api_key:
     st.info("👈 左のサイドバーにGemini APIキーを入力してください")
     st.stop()
 
-genai.configure(api_key=api_key)
+def extract_text_from_pdf(pdf_file):
+    text = ""
+    with pdfplumber.open(io.BytesIO(pdf_file.read())) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text
 
-# 約款アップロード
 st.subheader("① 約款PDFのアップロード（最大3社）")
 
 cols = st.columns(3)
 companies = []
-pdfs = []
+texts = []
 
 labels = ["1社目", "2社目", "3社目"]
 for i, col in enumerate(cols):
@@ -39,7 +44,7 @@ for i, col in enumerate(cols):
         pdf = st.file_uploader(f"約款PDF（{labels[i]}）", type="pdf", key=f"pdf_{i}")
         if name and pdf:
             companies.append(name)
-            pdfs.append(pdf)
+            texts.append(pdf)
 
 if not companies:
     st.warning("保険会社名とPDFをセットで入力してください（1社以上）")
@@ -47,7 +52,6 @@ if not companies:
 
 st.success(f"✅ {len(companies)}社の約款が読み込まれています：{' / '.join(companies)}")
 
-# 質問入力
 st.subheader("② 質問を入力してください")
 question = st.text_area(
     "有責・無責を判定したいケースを入力",
@@ -55,26 +59,28 @@ question = st.text_area(
     height=100
 )
 
-# 判定実行
 if st.button("🔍 判定する", type="primary", disabled=not question):
-    model = genai.GenerativeModel("gemini-2.0-flash-lite")
+    client = genai.Client(api_key=api_key)
 
     st.subheader("③ 判定結果")
     result_cols = st.columns(len(companies))
 
-    for i, (company, pdf_file) in enumerate(zip(companies, pdfs)):
+    for i, (company, pdf_file) in enumerate(zip(companies, texts)):
         with result_cols[i]:
             st.markdown(f"### 🏢 {company}")
             with st.spinner("約款を分析中..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(pdf_file.read())
-                    tmp_path = tmp.name
-
                 try:
-                    uploaded = genai.upload_file(tmp_path, mime_type="application/pdf")
+                    pdf_text = extract_text_from_pdf(pdf_file)
+
+                    if not pdf_text.strip():
+                        st.error("PDFからテキストを抽出できませんでした。スキャンPDFの場合は対応しておりません。")
+                        continue
 
                     prompt = f"""あなたは保険約款の専門家です。
-添付の保険約款PDFを精読し、以下の質問に対して有責・無責を判定してください。
+以下の保険約款の内容を精読し、質問に対して有責・無責を判定してください。
+
+【約款内容】
+{pdf_text[:30000]}
 
 【質問】
 {question}
@@ -94,15 +100,15 @@ if st.button("🔍 判定する", type="primary", disabled=not question):
 
 必ず日本語で回答してください。"""
 
-                    response = model.generate_content([uploaded, prompt])
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=prompt
+                    )
                     st.markdown(response.text)
 
                 except Exception as e:
                     st.error(f"エラーが発生しました：{e}")
-                finally:
-                    os.unlink(tmp_path)
 
-    # 複数社の場合は比較まとめを表示
     if len(companies) > 1:
         st.divider()
         st.subheader("④ 各社比較まとめ")
